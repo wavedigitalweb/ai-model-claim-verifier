@@ -15,25 +15,47 @@ type CallModelParams = {
   userPrompt: string
 }
 
+async function callDirect(targetUrl: string, apiKey: string, reqBody: Record<string, unknown>): Promise<Response> {
+  return fetch(targetUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(reqBody),
+  })
+}
+
+async function callViaProxy(targetUrl: string, apiKey: string, reqBody: Record<string, unknown>): Promise<Response> {
+  return fetch("/api/proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: targetUrl, apiKey, body: reqBody }),
+  })
+}
+
+let useProxy = false
+
 async function callModel({ url, apiKey, model, systemPrompt, userPrompt }: CallModelParams): Promise<string> {
   const messages: Array<{ role: string; content: string }> = []
   if (systemPrompt) messages.push({ role: "system", content: systemPrompt })
   messages.push({ role: "user", content: userPrompt })
 
   const base = url.replace(/\/chat\/completions\/?$/, "")
-  const resp = await fetch(`${base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_tokens: 300,
-      temperature: 0,
-    }),
-  })
+  const targetUrl = `${base}/chat/completions`
+  const reqBody = { model, messages, max_tokens: 300, temperature: 0 }
+
+  let resp: Response
+  if (useProxy) {
+    resp = await callViaProxy(targetUrl, apiKey, reqBody)
+  } else {
+    try {
+      resp = await callDirect(targetUrl, apiKey, reqBody)
+    } catch {
+      useProxy = true
+      resp = await callViaProxy(targetUrl, apiKey, reqBody)
+    }
+  }
 
   if (!resp.ok) {
     const body = await resp.text()
@@ -52,6 +74,7 @@ export async function runProbes(
   signal?: AbortSignal,
 ): Promise<Record<string, ProbeOutcome>> {
   const cleanUrl = url.replace(/\/+$/, "")
+  useProxy = false
   const results: Record<string, ProbeOutcome> = {}
   const progressList: ProbeProgress[] = PROBES.map((p) => ({
     probeName: p.name,
